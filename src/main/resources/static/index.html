@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+    <meta name="format-detection" content="telephone=no">
+    <title>Thoth — делим чек</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app">
+
+    <!-- Экран 1: старт -->
+    <section class="screen" id="screen-start" data-screen="start">
+        <div class="hero">
+            <div class="hero__icon" aria-hidden="true">🧾</div>
+            <h1>Делим чек</h1>
+            <p class="hint">Сфотографируйте счёт, отметьте, кто что ел, — и бот посчитает, сколько платит каждый.</p>
+        </div>
+        <button class="btn btn--primary" id="btn-start" type="button">Начать расчёт</button>
+    </section>
+
+    <!-- Экран 2: гости -->
+    <section class="screen" id="screen-guests" data-screen="guests" hidden>
+        <h2>Кто за столом?</h2>
+        <p class="hint">Каждое имя — с новой строки. Список задаётся один раз, порядок важен: остаток доли получает следующий гость.</p>
+        <label class="field">
+            <span class="field__label">Гости</span>
+            <textarea id="guest-names" rows="6" placeholder="Аня&#10;Боря&#10;Вика" autocomplete="off"></textarea>
+        </label>
+        <p class="hint" id="guest-count">0 гостей</p>
+        <button class="btn btn--primary" id="btn-guests" type="button">Далее</button>
+    </section>
+
+    <!-- Экран 3: фото чека -->
+    <section class="screen" id="screen-receipt" data-screen="receipt" hidden>
+        <h2>Фото чека</h2>
+        <p class="hint">Сфотографируйте чек целиком, при хорошем освещении. JPEG, PNG или WebP до 10 МБ.</p>
+        <label class="btn btn--primary btn--file" id="btn-receipt">
+            <input type="file" id="receipt-file" accept="image/jpeg,image/png,image/webp,image/*">
+            Загрузить фото чека
+        </label>
+        <div class="processing" id="processing" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+            <p>Распознаю…</p>
+            <p class="hint">Обычно это занимает 10–30 секунд</p>
+        </div>
+    </section>
+
+    <!-- Экраны 4–5: позиции и отчёт -->
+    <section class="screen" id="screen-main" data-screen="main" hidden>
+        <nav class="tabs" role="tablist">
+            <button class="tabs__tab is-active" type="button" role="tab" data-tab="items">Позиции</button>
+            <button class="tabs__tab" type="button" role="tab" data-tab="report">Итог</button>
+        </nav>
+
+        <div class="tab-panel" data-panel="items">
+            <p class="hint">Выберите гостя и укажите долю от 0 до 1. Если доля меньше 1, остаток уйдёт следующему гостю.</p>
+            <div id="items" class="items"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="report" hidden>
+            <div class="card">
+                <table class="report">
+                    <thead>
+                    <tr><th>Гость</th><th class="num">К оплате</th></tr>
+                    </thead>
+                    <tbody id="report-body"></tbody>
+                    <tfoot>
+                    <tr><th>Итого</th><th class="num" id="report-total"></th></tr>
+                    </tfoot>
+                </table>
+                <p class="warning" id="report-warning" hidden></p>
+            </div>
+            <button class="btn btn--primary" id="btn-share" type="button">Поделиться результатом</button>
+        </div>
+
+        <button class="btn btn--link" id="btn-restart" type="button">Новый расчёт</button>
+    </section>
+
+</main>
+
+<div class="toasts" id="toasts" aria-live="assertive"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

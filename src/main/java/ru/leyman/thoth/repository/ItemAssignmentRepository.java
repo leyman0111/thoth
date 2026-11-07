@@ -5,14 +5,13 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import ru.leyman.thoth.domain.ItemAssignment;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface ItemAssignmentRepository extends JpaRepository<ItemAssignment, Long> {
 
-    /** Все доли сессии одним запросом (без N+1) — для расчёта итогов в Mini App. */
+    /** Все доли сессии одним запросом (без N+1). */
     @Query("""
             select a from ItemAssignment a
             join fetch a.item i
@@ -24,7 +23,7 @@ public interface ItemAssignmentRepository extends JpaRepository<ItemAssignment, 
 
     Optional<ItemAssignment> findByItemIdAndGuestId(Long itemId, Long guestId);
 
-    /** Уже распределённая доля позиции — для проверки, что сумма не превысит 1.00. */
-    @Query("select coalesce(sum(a.shareRatio), 0) from ItemAssignment a where a.item.id = :itemId")
-    BigDecimal sumShareByItemId(@Param("itemId") Long itemId);
+    /** Доли одной позиции в порядке добавления, с гостями (без N+1). */
+    @Query("select a from ItemAssignment a join fetch a.guest where a.item.id = :itemId order by a.id")
+    List<ItemAssignment> findAllByItemIdOrderByIdAsc(@Param("itemId") Long itemId);
 }

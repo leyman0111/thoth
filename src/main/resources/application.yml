@@ -19,3 +19,48 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
+      # Файл до этого размера Tomcat держит в памяти и не пишет во временный каталог
+      file-size-threshold: 10MB
+
+  mvc:
+    problemdetails:
+      enabled: true               # ошибки валидации и парсинга тоже в формате problem+json
+
+thoth:
+  openrouter:
+    api-key: ${OPENROUTER_API_KEY:}
+    # Бесплатные модели (:free): 20 запросов/мин, 50 в день (1000, если на аккаунте куплено от 10 кредитов).
+    # При отрицательном балансе OpenRouter отвечает 402 даже на бесплатные модели.
+    model: ${OPENROUTER_MODEL:nvidia/nemotron-3.5-super-vl:free}
+    # Резервные модели по порядку, если основная недоступна или в лимите.
+    # Не добавляйте сюда платные модели во время отладки — запрос к ним будет оплачен.
+    fallback-models: ${OPENROUTER_FALLBACK_MODELS:thinkingmachines/inkling:free}
+    read-timeout: 90s
+    app-url: ${THOTH_APP_URL:}
+  receipt:
+    base-currency: RUB
+    # Фиксированные курсы: сколько рублей за 1 единицу валюты.
+    # Чек в валюте, которой здесь нет, отклоняется с ошибкой 422.
+    # Значения ниже — пример формата, а не актуальные курсы: подставьте свои.
+    exchange-rates:
+       USD: 100.00
+    #   EUR: 110.00
+    #   KZT: 0.20
+  cors:
+    allowed-origins: ${THOTH_CORS_ORIGINS:}
+  telegram:
+    # Токен от @BotFather: бот и проверка подписи initData от Mini App
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    # HTTPS-адрес этого приложения, который открывают кнопки бота (локально — через туннель)
+    web-app-url: ${THOTH_WEBAPP_URL:}
+    # Сколько действует подпись initData после открытия Mini App
+    init-data-max-age: 24h
+    # true — API принимает X-Telegram-User-Id без подписи (отладка в браузере). На проде false!
+    dev-mode: ${THOTH_DEV_MODE:false}
+    # Запускать бота (long polling). false — если обновления бота читает другой сервис
+    bot-enabled: ${THOTH_BOT_ENABLED:true}

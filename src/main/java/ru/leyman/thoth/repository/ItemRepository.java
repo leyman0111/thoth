@@ -7,11 +7,14 @@ import org.springframework.data.repository.query.Param;
 import ru.leyman.thoth.domain.Item;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface ItemRepository extends JpaRepository<Item, Long> {
 
     List<Item> findAllBySessionIdOrderByIdAsc(UUID sessionId);
+
+    Optional<Item> findByIdAndSessionId(Long id, UUID sessionId);
 
     /** Перераспознавание чека: старые позиции и их доли удаляются каскадом в БД. */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
