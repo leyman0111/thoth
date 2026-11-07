@@ -44,10 +44,12 @@ jobs:
       DB_USERNAME: thoth
       DB_PASSWORD: thoth
       THOTH_BOT_ENABLED: 'false'
+      # фиктивный: TelegramAuthFilter требует токен при старте контекста, бот в CI выключен
+      TELEGRAM_BOT_TOKEN: '000000:ci-dummy-token'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -58,7 +60,7 @@ jobs:
 
       - name: Test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: surefire-reports
           path: target/surefire-reports
@@ -73,7 +75,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: tag
         run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -119,7 +121,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "### Deploy \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check server is provisioned
         uses: appleboy/ssh-action@v1
