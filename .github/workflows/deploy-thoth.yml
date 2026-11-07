@@ -1,0 +1,202 @@
+name: Deploy thoth
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Ручной запуск: Actions → Deploy thoth → Run workflow
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          Тег уже собранного образа (12 символов SHA или latest) — редеплой/откат БЕЗ сборки и тестов.
+          Пусто — протестировать, собрать выбранную ветку и задеплоить.
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: thoth-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/leyman0111/thoth
+  APP_DIR: /opt/thoth
+
+jobs:
+  test:
+    if: github.event_name != 'workflow_dispatch' || inputs.image_tag == ''
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: thoth
+          POSTGRES_USER: thoth
+          POSTGRES_PASSWORD: thoth
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U thoth -d thoth"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/thoth
+      DB_USERNAME: thoth
+      DB_PASSWORD: thoth
+      THOTH_BOT_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: mvn verify
+        run: mvn -B -ntp verify
+
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [test, build]
+    # и после сборки, и при ручном редеплое по тегу (тогда test и build пропущены)
+    if: >-
+      ${{ !cancelled() && github.event_name != 'pull_request' &&
+          (needs.build.result == 'success' ||
+           (github.event_name == 'workflow_dispatch' && inputs.image_tag != '')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Resolve image tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          BUILT_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-$BUILT_TAG}"
+          [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Некорректный тег: '$TAG'"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "### Deploy \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+
+      - name: Check server is provisioned
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_DIR: ${{ env.APP_DIR }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: APP_DIR
+          script: |
+            set -eu
+            fail() { echo "::error::$1 Сначала запусти workflow 'Provision thoth server'."; exit 1; }
+            [ -d "$APP_DIR" ]      || fail "Нет каталога $APP_DIR."
+            [ -w "$APP_DIR" ]      || fail "Нет прав на запись в $APP_DIR у пользователя $(id -un)."
+            [ -f "$APP_DIR/.env" ] || fail "Нет $APP_DIR/.env."
+            docker info >/dev/null 2>&1 || fail "Пользователь $(id -un) не может работать с docker."
+            echo "Server OK"
+
+      - name: Copy compose to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: deploy/docker-compose.yml
+          target: ${{ env.APP_DIR }}
+          strip_components: 1
+
+      - name: Pull image and restart
+        uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_DIR: ${{ env.APP_DIR }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,APP_DIR
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            cd "$APP_DIR"
+
+            if grep -q '^IMAGE_TAG=' .env; then
+              sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${IMAGE_TAG}/" .env
+            else
+              echo "IMAGE_TAG=${IMAGE_TAG}" >> .env
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker compose pull
+            docker logout ghcr.io
+            # бот читает обновления long polling'ом: одновременно может работать только один экземпляр,
+            # поэтому старый контейнер останавливается до запуска нового (поведение compose по умолчанию)
+            docker compose up -d --remove-orphans --force-recreate app
+            docker compose up -d --remove-orphans
+            docker image prune -f >/dev/null
+
+            echo "Waiting for app to become healthy (tag ${IMAGE_TAG})..."
+            CID="$(docker compose ps -q app)"
+            HEALTHY=0
+            for i in $(seq 1 36); do
+              STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$CID")"
+              echo "[$i] health: $STATUS"
+              [ "$STATUS" = "healthy" ] && { HEALTHY=1; break; }
+              [ "$STATUS" = "unhealthy" ] && break
+              sleep 5
+            done
+            if [ "$HEALTHY" != 1 ]; then
+              echo "App is not healthy, last logs:"
+              docker compose logs --tail=200 app
+              exit 1
+            fi
+            docker compose ps

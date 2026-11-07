@@ -1,0 +1,63 @@
+name: Provision thoth server
+
+# Ручной, идемпотентный: можно запускать повторно (например, чтобы обновить секреты в .env).
+# Docker на сервере уже поставлен provision-workflow'ом loco-back — здесь только проверяется.
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Provision (/opt/thoth, .env)
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_DIR: /opt/thoth
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THOTH_WEBAPP_URL: ${{ vars.THOTH_WEBAPP_URL }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: APP_DIR,DB_PASSWORD,TELEGRAM_BOT_TOKEN,OPENROUTER_API_KEY,THOTH_WEBAPP_URL
+          script: |
+            set -euo pipefail
+            S=""; [ "$(id -u)" -ne 0 ] && S="sudo -n"
+            DEPLOY_USER="$(id -un)"
+
+            echo "== [1/3] Проверка секретов"
+            for v in DB_PASSWORD TELEGRAM_BOT_TOKEN OPENROUTER_API_KEY; do
+              [ -n "${!v}" ] || { echo "Секрет $v не задан"; exit 1; }
+            done
+            for v in DB_PASSWORD TELEGRAM_BOT_TOKEN OPENROUTER_API_KEY THOTH_WEBAPP_URL; do
+              case "${!v}" in *"'"*) echo "$v не должен содержать одинарную кавычку"; exit 1;; esac
+            done
+            [ -n "$THOTH_WEBAPP_URL" ] || echo "::warning::Переменная THOTH_WEBAPP_URL не задана — кнопки бота не откроют Mini App"
+
+            echo "== [2/3] Docker"
+            docker info >/dev/null 2>&1 || { echo "Docker недоступен пользователю $DEPLOY_USER — сначала 'Provision loco-back server'"; exit 1; }
+            docker compose version
+
+            echo "== [3/3] $APP_DIR и .env"
+            $S mkdir -p "$APP_DIR"
+            $S chown "$DEPLOY_USER": "$APP_DIR"
+            OLD_TAG="$(grep -s '^IMAGE_TAG=' "$APP_DIR/.env" | cut -d= -f2- || true)"
+            TMP="$(mktemp)"
+            {
+              q() { printf "%s='%s'\n" "$1" "$2"; }
+              q DB_NAME thoth
+              q DB_USERNAME thoth
+              q DB_PASSWORD "$DB_PASSWORD"
+              q TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
+              q OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
+              q THOTH_WEBAPP_URL "$THOTH_WEBAPP_URL"
+              echo "IMAGE_TAG=${OLD_TAG:-latest}"
+            } > "$TMP"
+            install -m 600 "$TMP" "$APP_DIR/.env"
+            rm -f "$TMP"
+
+            echo "== Готово"
+            ls -la "$APP_DIR"
