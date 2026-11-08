@@ -12,14 +12,21 @@ push в main    ──► test ──► build (ghcr.io/leyman0111/thoth:<sha12>
 
 ## Соседство с loco-back
 
-|              | loco-back       | thoth            |
-|--------------|-----------------|------------------|
-| каталог      | `/opt/app`      | `/opt/thoth`     |
-| compose name | `loco`          | `thoth`          |
-| приложение   | 127.0.0.1:8080  | 127.0.0.1:8081   |
-| PostgreSQL   | 127.0.0.1:5433  | 127.0.0.1:5434   |
+|              | loco-back       | thoth                                   |
+|--------------|-----------------|-----------------------------------------|
+| каталог      | `/opt/app`      | `/opt/thoth`                            |
+| compose name | `loco`          | `thoth`                                 |
+| приложение   | 127.0.0.1:8080  | 127.0.0.1:8081, лимит памяти 400 МБ     |
+| PostgreSQL   | 127.0.0.1:5433  | **та же**, база `thoth`, роль `thoth`   |
 
-У каждого проекта свой контейнер БД и свой том.
+На сервере около 1 ГБ RAM, второй PostgreSQL не помещается. Поэтому thoth подключается к сети `loco_default`
+и ходит в `db:5432` контейнера loco-back. База `thoth` принадлежит роли `thoth`, к данным loco у неё доступа нет.
+Базу и роль создаёт (и обновляет пароль) workflow **Provision thoth server**.
+
+Следствия:
+- thoth не работает, пока не запущен loco-back (без БД приложение падает и перезапускается).
+- Бэкап `pgdata` loco-back включает и данные thoth.
+- `docker compose down -v` в `/opt/app` удалит и базу thoth.
 
 ## Первый запуск
 
@@ -42,7 +49,7 @@ push в main    ──► test ──► build (ghcr.io/leyman0111/thoth:<sha12>
 5. В @BotFather для бота задать домен Mini App (`/setdomain` или через Bot Settings → Configure Mini App).
 
 Секреты поменялись → снова **Provision**, затем **Deploy** с `image_tag=latest`.
-`DB_PASSWORD` после первого запуска БД менять так нельзя: postgres берёт пароль только при инициализации тома.
+`DB_PASSWORD` можно менять: Provision выставит роли `thoth` новый пароль.
 
 ## Важно про бота
 
@@ -59,5 +66,5 @@ Actions → Deploy thoth → Run workflow → `image_tag` = 12 символов 
 cd /opt/thoth
 docker compose ps
 docker compose logs -f app
-# БД с ноутбука: ssh -L 5434:127.0.0.1:5434 <user>@<server>  → localhost:5434, thoth / DB_PASSWORD
+# БД с ноутбука: ssh -L 5433:127.0.0.1:5433 <user>@<server>  → localhost:5433, база thoth, thoth / DB_PASSWORD
 ```
