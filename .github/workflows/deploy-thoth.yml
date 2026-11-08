@@ -140,6 +140,8 @@ jobs:
             [ -w "$APP_DIR" ]      || fail "Нет прав на запись в $APP_DIR у пользователя $(id -un)."
             [ -f "$APP_DIR/.env" ] || fail "Нет $APP_DIR/.env."
             docker info >/dev/null 2>&1 || fail "Пользователь $(id -un) не может работать с docker."
+            docker network inspect loco_default >/dev/null 2>&1 \
+              || { echo "::error::Нет сети loco_default: thoth использует PostgreSQL loco-back, сначала должен быть запущен loco-back."; exit 1; }
             echo "Server OK"
 
       - name: Copy compose to server
