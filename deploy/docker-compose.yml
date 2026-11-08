@@ -1,0 +1,53 @@
+# Прод-конфигурация. Лежит на сервере в /opt/thoth рядом с .env.
+# Копируется туда workflow'ом deploy-thoth.yml при каждом деплое.
+# На том же сервере работает loco-back (/opt/app, порты 8080 и 5433) — порты не пересекаются.
+name: thoth
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-thoth}
+      POSTGRES_USER: ${DB_USERNAME:-thoth}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # только loopback сервера; клиентом (DBeaver) — через SSH-туннель на 127.0.0.1:5434
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  app:
+    image: ghcr.io/leyman0111/thoth:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-thoth}
+      DB_USERNAME: ${DB_USERNAME:-thoth}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      THOTH_WEBAPP_URL: ${THOTH_WEBAPP_URL:-}
+      THOTH_APP_URL: ${THOTH_WEBAPP_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-super-vl:free}
+      OPENROUTER_FALLBACK_MODELS: ${OPENROUTER_FALLBACK_MODELS:-thinkingmachines/inkling:free}
+      THOTH_DEV_MODE: "false"
+    ports:
+      # только localhost — снаружи через nginx хоста (8080 занят loco-back)
+      - "127.0.0.1:${APP_HOST_PORT:-8081}:8080"
+    logging: *logging
+
+volumes:
+  pgdata:

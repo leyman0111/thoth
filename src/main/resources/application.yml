@@ -31,6 +31,19 @@ spring:
     problemdetails:
       enabled: true               # ошибки валидации и парсинга тоже в формате problem+json
 
+server:
+  # за nginx: учитывать X-Forwarded-Proto/Host при построении ссылок
+  forward-headers-strategy: native
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health           # наружу только /actuator/health — его опрашивает healthcheck контейнера
+  endpoint:
+    health:
+      show-details: never
+
 thoth:
   openrouter:
     api-key: ${OPENROUTER_API_KEY:}
