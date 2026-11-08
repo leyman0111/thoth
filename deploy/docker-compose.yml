@@ -7,6 +7,9 @@ services:
   db:
     image: postgres:17-alpine
     restart: unless-stopped
+    # без лимитов контейнеры thoth и loco-back делят всю RAM сервера и выдавливают друг друга в swap
+    mem_limit: ${DB_MEM_LIMIT:-256m}
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=30"]
     environment:
       POSTGRES_DB: ${DB_NAME:-thoth}
       POSTGRES_USER: ${DB_USERNAME:-thoth}
@@ -30,6 +33,8 @@ services:
   app:
     image: ghcr.io/leyman0111/thoth:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    # JVM берёт MaxRAMPercentage от этого лимита (heap ≈ 75%), а не от всей памяти сервера
+    mem_limit: ${APP_MEM_LIMIT:-640m}
     depends_on:
       db:
         condition: service_healthy
