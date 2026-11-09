@@ -1,22 +1,47 @@
 # Прод-конфигурация. Лежит на сервере в /opt/thoth рядом с .env.
 # Копируется туда workflow'ом deploy-thoth.yml при каждом деплое.
-#
-# Своей PostgreSQL у thoth нет: на сервере мало памяти, поэтому база `thoth` (владелец — роль `thoth`)
-# живёт в PostgreSQL loco-back (/opt/app, сервис db). Базу и роль создаёт workflow 'Provision thoth server'.
-# Приложение подключается к сети loco_default и ходит в db:5432. Порт приложения 8081 (8080 занят loco-back).
+# Отдельный сервер thoth (AlmaLinux) за nginx хоста. Лимиты памяти рассчитаны на сервер 2 ГБ,
+# переопределяются переменными репозитория APP_MEM_LIMIT / DB_MEM_LIMIT (их пишет Provision в .env).
 name: thoth
 
 services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    mem_limit: ${DB_MEM_LIMIT:-320m}
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=30"]
+    environment:
+      POSTGRES_DB: ${DB_NAME:-thoth}
+      POSTGRES_USER: ${DB_USERNAME:-thoth}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # только loopback сервера; клиентом (DBeaver) — через SSH-туннель на 127.0.0.1:5432
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   app:
     image: ghcr.io/leyman0111/thoth:${IMAGE_TAG:-latest}
     restart: unless-stopped
     # JVM берёт MaxRAMPercentage от этого лимита, а не от всей памяти сервера
-    mem_limit: ${APP_MEM_LIMIT:-400m}
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-thoth}
       DB_USERNAME: ${DB_USERNAME:-thoth}
-      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      # маленький сервер: меньше потоков и соединений
+      DB_PASSWORD: ${DB_PASSWORD}
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
       SERVER_TOMCAT_THREADS_MAX: "20"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
@@ -26,18 +51,10 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-super-vl:free}
       OPENROUTER_FALLBACK_MODELS: ${OPENROUTER_FALLBACK_MODELS:-thinkingmachines/inkling:free}
       THOTH_DEV_MODE: "false"
-    networks:
-      - loco
     ports:
       # только localhost — снаружи через nginx хоста
-      - "127.0.0.1:${APP_HOST_PORT:-8081}:8080"
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+      - "127.0.0.1:${APP_HOST_PORT:-8080}:8080"
+    logging: *logging
 
-networks:
-  loco:
-    external: true
-    name: loco_default
+volumes:
+  pgdata:

@@ -1,7 +1,10 @@
 name: Provision thoth server
 
 # Ручной, идемпотентный: можно запускать повторно (например, чтобы обновить секреты в .env).
-# Docker на сервере уже поставлен provision-workflow'ом loco-back — здесь только проверяется.
+#
+# Работает БЕЗ sudo: пользователь deploy не имеет root-прав. Всё, что требует root
+# (Docker, пользователь deploy в группе docker, каталог /opt/thoth с владельцем deploy, firewalld,
+# SELinux для nginx), делается один раз вручную скриптом setup-users.sh — см. DEPLOY.md.
 on:
   workflow_dispatch:
 
@@ -9,7 +12,7 @@ jobs:
   provision:
     runs-on: ubuntu-latest
     steps:
-      - name: Provision (/opt/thoth, .env, база thoth в PostgreSQL loco-back)
+      - name: Provision (/opt/thoth/.env)
         uses: appleboy/ssh-action@v1
         env:
           APP_DIR: /opt/thoth
@@ -17,35 +20,39 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           THOTH_WEBAPP_URL: ${{ vars.THOTH_WEBAPP_URL }}
+          APP_MEM_LIMIT: ${{ vars.APP_MEM_LIMIT }}
+          DB_MEM_LIMIT: ${{ vars.DB_MEM_LIMIT }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: APP_DIR,DB_PASSWORD,TELEGRAM_BOT_TOKEN,OPENROUTER_API_KEY,THOTH_WEBAPP_URL
+          envs: APP_DIR,DB_PASSWORD,TELEGRAM_BOT_TOKEN,OPENROUTER_API_KEY,THOTH_WEBAPP_URL,APP_MEM_LIMIT,DB_MEM_LIMIT
           script: |
             set -euo pipefail
-            S=""; [ "$(id -u)" -ne 0 ] && S="sudo -n"
-            DEPLOY_USER="$(id -un)"
+            echo "== Сервер: $(. /etc/os-release && echo "$PRETTY_NAME"), пользователь $(id -un), RAM $(free -m | awk '/^Mem:/{print $2}') МБ"
+            fail() { echo "::error::$1"; exit 1; }
 
-            echo "== [1/4] Проверка секретов"
+            echo "== [1/3] Проверка секретов"
             for v in DB_PASSWORD TELEGRAM_BOT_TOKEN OPENROUTER_API_KEY; do
-              [ -n "${!v}" ] || { echo "Секрет $v не задан"; exit 1; }
+              [ -n "${!v}" ] || fail "Секрет $v не задан"
             done
-            for v in DB_PASSWORD TELEGRAM_BOT_TOKEN OPENROUTER_API_KEY THOTH_WEBAPP_URL; do
-              case "${!v}" in *"'"*) echo "$v не должен содержать одинарную кавычку"; exit 1;; esac
+            for v in DB_PASSWORD TELEGRAM_BOT_TOKEN OPENROUTER_API_KEY THOTH_WEBAPP_URL APP_MEM_LIMIT DB_MEM_LIMIT; do
+              case "${!v}" in *"'"*) fail "$v не должен содержать одинарную кавычку";; esac
             done
             [ -n "$THOTH_WEBAPP_URL" ] || echo "::warning::Переменная THOTH_WEBAPP_URL не задана — кнопки бота не откроют Mini App"
 
-            echo "== [2/4] Docker"
-            docker info >/dev/null 2>&1 || { echo "Docker недоступен пользователю $DEPLOY_USER — сначала 'Provision loco-back server'"; exit 1; }
+            echo "== [2/3] Docker и каталог (подготавливаются вручную от root, см. DEPLOY.md)"
+            command -v docker >/dev/null 2>&1 || fail "Docker не установлен — запустите setup-users.sh от root"
+            docker info >/dev/null 2>&1 || fail "Пользователь $(id -un) не может работать с docker — добавьте его в группу docker (usermod -aG docker $(id -un)) и перезайдите"
             docker compose version
+            [ -d "$APP_DIR" ] || fail "Нет $APP_DIR — от root: install -d -m 750 -o $(id -un) -g $(id -un) $APP_DIR"
+            [ -w "$APP_DIR" ] || fail "Нет прав на запись в $APP_DIR — от root: chown $(id -un): $APP_DIR"
 
-            echo "== [3/4] $APP_DIR и .env"
-            $S mkdir -p "$APP_DIR"
-            $S chown "$DEPLOY_USER": "$APP_DIR"
+            echo "== [3/3] $APP_DIR/.env"
             OLD_TAG="$(grep -s '^IMAGE_TAG=' "$APP_DIR/.env" | cut -d= -f2- || true)"
-            TMP="$(mktemp)"
+            TMP="$(mktemp "$APP_DIR/.env.XXXXXX")"
+            trap 'rm -f "$TMP"' EXIT
             {
               q() { printf "%s='%s'\n" "$1" "$2"; }
               q DB_NAME thoth
@@ -54,28 +61,18 @@ jobs:
               q TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
               q OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
               q THOTH_WEBAPP_URL "$THOTH_WEBAPP_URL"
+              if [ -n "$APP_MEM_LIMIT" ]; then q APP_MEM_LIMIT "$APP_MEM_LIMIT"; fi
+              if [ -n "$DB_MEM_LIMIT" ]; then q DB_MEM_LIMIT "$DB_MEM_LIMIT"; fi
               echo "IMAGE_TAG=${OLD_TAG:-latest}"
             } > "$TMP"
-            install -m 600 "$TMP" "$APP_DIR/.env"
-            rm -f "$TMP"
+            chmod 600 "$TMP"
+            mv -f "$TMP" "$APP_DIR/.env"
+            trap - EXIT
 
-            echo "== [4/4] База и роль thoth в PostgreSQL loco-back"
-            LOCO_DIR=/opt/app
-            [ -f "$LOCO_DIR/.env" ] || { echo "Нет $LOCO_DIR/.env — loco-back не развёрнут"; exit 1; }
-            docker network inspect loco_default >/dev/null 2>&1 || { echo "Нет сети loco_default — loco-back не запущен"; exit 1; }
-            # .env loco-back не source'им: там свой DB_PASSWORD
-            loco_env() { grep -s "^$1=" "$LOCO_DIR/.env" | cut -d= -f2- | sed "s/^'//; s/'$//"; }
-            LOCO_DB_USER="$(loco_env DB_USERNAME)"; LOCO_DB_NAME="$(loco_env DB_NAME)"
-            cd "$LOCO_DIR"
-            docker compose exec -T db psql -v ON_ERROR_STOP=1 -q \
-              -U "${LOCO_DB_USER:-loco}" -d "${LOCO_DB_NAME:-loco}" -v pw="$DB_PASSWORD" <<'SQL'
-            SELECT 'CREATE ROLE thoth LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thoth') \gexec
-            ALTER ROLE thoth WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'pw' CONNECTION LIMIT 10;
-            SELECT 'CREATE DATABASE thoth OWNER thoth' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'thoth') \gexec
-            -- к базе thoth подключается только её владелец (и суперпользователь loco)
-            REVOKE CONNECT ON DATABASE thoth FROM PUBLIC;
-            SQL
-            echo "База thoth: OK"
+            # пароль БД postgres берёт только при первой инициализации тома
+            if docker volume inspect thoth_pgdata >/dev/null 2>&1; then
+              echo "::notice::Том thoth_pgdata уже есть: смена DB_PASSWORD сама не применится к существующей БД (ALTER ROLE вручную)"
+            fi
 
             echo "== Готово"
             ls -la "$APP_DIR"
