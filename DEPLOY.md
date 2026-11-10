@@ -1,6 +1,6 @@
 # Деплой Thoth
 
-Отдельный сервер (AlmaLinux), Docker Compose за nginx хоста, образ в GHCR, деплой по SSH из GitHub Actions.
+Тот же сервер и та же схема, что у loco-back: Docker Compose за nginx хоста, образ в GHCR, деплой по SSH из GitHub Actions.
 
 ```
 PR в main      ──► test (mvn verify + PostgreSQL в service-контейнере)
@@ -10,77 +10,39 @@ push в main    ──► test ──► build (ghcr.io/leyman0111/thoth:<sha12>
 
 Деплой проходит только когда контейнер стал `healthy` по `/actuator/health`, иначе job падает и показывает логи.
 
-## Что где на сервере
+## Соседство с loco-back
 
-| | |
-|---|---|
-| каталог | `/opt/thoth` (`.env`, `docker-compose.yml`), владелец `deploy` |
-| приложение | `127.0.0.1:8080`, лимит памяти 512 МБ |
-| PostgreSQL 17 | `127.0.0.1:5432`, лимит 320 МБ, том `thoth_pgdata` |
-| пользователи | `ilnur` — администратор (sudo с паролем), `deploy` — CI/CD (только ключ, группа docker, без sudo) |
+|              | loco-back       | thoth            |
+|--------------|-----------------|------------------|
+| каталог      | `/opt/app`      | `/opt/thoth`     |
+| compose name | `loco`          | `thoth`          |
+| приложение   | 127.0.0.1:8080  | 127.0.0.1:8081   |
+| PostgreSQL   | 127.0.0.1:5433  | 127.0.0.1:5434   |
 
-Лимиты рассчитаны на 2 ГБ RAM. Для другого сервера — переменные репозитория `APP_MEM_LIMIT` / `DB_MEM_LIMIT`
-(например `768m` / `512m` для 4 ГБ), затем Provision и Deploy.
+У каждого проекта свой контейнер БД и свой том.
 
 ## Первый запуск
 
-### 1. Сервер (один раз, от root)
+1. **Секреты** (repo → Settings → Secrets and variables → Actions → *Secrets*):
 
-`deploy/setup-users.sh`: обновление системы, Docker CE, пользователи `ilnur` и `deploy` с SSH-ключами,
-`/opt/thoth`, запрет входа root и по паролю, firewalld (ssh/http/https), SELinux-флаг для nginx.
+   | Секрет | Откуда |
+   |---|---|
+   | `SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`, `SERVER_PORT` (необяз.) | те же значения, что в loco-back (секреты привязаны к репозиторию, их нужно завести заново) |
+   | `DB_PASSWORD` | новый случайный: `openssl rand -base64 24` (без `'`) |
+   | `TELEGRAM_BOT_TOKEN` | @BotFather |
+   | `OPENROUTER_API_KEY` | openrouter.ai |
 
-```bash
-# на маке: ключи
-ssh-keygen -t ed25519 -C "ilnur@macbook" -f ~/.ssh/thoth_ilnur
-ssh-keygen -t ed25519 -C "github-actions-thoth" -f ~/.ssh/thoth_deploy -N ""
-# вставить содержимое обоих .pub в начало скрипта, затем
-scp deploy/setup-users.sh root@<IP>:
-ssh -t root@<IP> bash setup-users.sh
-```
+   *Variables* → `THOTH_WEBAPP_URL` = `https://<домен>` — адрес, который откроют кнопки бота.
 
-Проверить в **новом** окне `ssh -t -i ~/.ssh/thoth_ilnur ilnur@<IP> 'sudo -v && echo ok'` и
-`ssh -i ~/.ssh/thoth_deploy deploy@<IP> docker ps`, и только потом в окне root `systemctl reload sshd`.
+2. **Actions → Provision thoth server → Run workflow** — создаст `/opt/thoth/.env`.
+3. **Actions → Deploy thoth → Run workflow** (или push в main).
+4. **nginx + HTTPS** — шаблон `deploy/nginx/thoth.conf` → `/etc/nginx/conf.d/thoth.conf`, затем
+   `sudo certbot --nginx -d <домен>` и `sudo nginx -t && sudo systemctl reload nginx`.
+   SELinux-флаг `httpd_can_network_connect` уже включён provision'ом loco-back.
+5. В @BotFather для бота задать домен Mini App (`/setdomain` или через Bot Settings → Configure Mini App).
 
-### 2. Секреты и переменные GitHub
-
-Repo → Settings → Secrets and variables → Actions.
-
-| Секрет | Значение |
-|---|---|
-| `SERVER_HOST` | IP сервера |
-| `SERVER_USER` | `deploy` |
-| `SERVER_SSH_KEY` | содержимое `~/.ssh/thoth_deploy` (приватный ключ) |
-| `SERVER_PORT` | необязательно, если не 22 |
-| `DB_PASSWORD` | `openssl rand -base64 24` (без `'`) |
-| `TELEGRAM_BOT_TOKEN` | @BotFather |
-| `OPENROUTER_API_KEY` | openrouter.ai |
-
-| Переменная | Значение |
-|---|---|
-| `THOTH_WEBAPP_URL` | `https://<домен>` — адрес, который откроют кнопки бота |
-| `APP_MEM_LIMIT`, `DB_MEM_LIMIT` | необязательно, по умолчанию `512m` / `320m` |
-
-### 3. Actions
-
-1. **Provision thoth server** → Run workflow — пишет `/opt/thoth/.env` (sudo не нужен).
-2. **Deploy thoth** → Run workflow (или push в main).
-
-### 4. nginx + HTTPS (от ilnur)
-
-```bash
-sudo dnf -y install nginx certbot python3-certbot-nginx
-sudo cp thoth.conf /etc/nginx/conf.d/thoth.conf     # из deploy/nginx/, домен поправить
-sudo systemctl enable --now nginx
-sudo certbot --nginx -d <домен>
-```
-
-Затем в @BotFather задать домен Mini App.
-
-## Секреты поменялись
-
-Снова **Provision**, затем **Deploy** с `image_tag=latest`.
-`DB_PASSWORD` postgres применяет только при первой инициализации тома; для существующей БД:
-`docker compose exec db psql -U thoth -c "ALTER ROLE thoth PASSWORD '<новый>'"`.
+Секреты поменялись → снова **Provision**, затем **Deploy** с `image_tag=latest`.
+`DB_PASSWORD` после первого запуска БД менять так нельзя: postgres берёт пароль только при инициализации тома.
 
 ## Важно про бота
 
@@ -97,6 +59,5 @@ Actions → Deploy thoth → Run workflow → `image_tag` = 12 символов 
 cd /opt/thoth
 docker compose ps
 docker compose logs -f app
-docker stats --no-stream
-# БД с ноутбука: ssh -L 5432:127.0.0.1:5432 -i ~/.ssh/thoth_ilnur ilnur@<IP> → localhost:5432, thoth / DB_PASSWORD
+# БД с ноутбука: ssh -L 5434:127.0.0.1:5434 <user>@<server>  → localhost:5434, thoth / DB_PASSWORD
 ```

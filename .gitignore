@@ -12,3 +12,7 @@ target/
 ### local secrets ###
 .env
 *.env.local
+/.mvn/
+/claude/
+/mvnw
+/mvnw.cmd
